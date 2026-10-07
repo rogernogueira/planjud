@@ -10,6 +10,7 @@
   Débitos Gerais, Fazenda Pública, Previdenciário, Débitos Gerais + IPCA (Lei 14.905/2024)…
 - **Regimes especiais:** EC 113/2021 (SELIC), EC 136/2025 (Prov. 207/CNJ), Lei 14.905/2024, Taxa Legal (art. 406, §1º, CC)
 - **Múltiplas parcelas** por linha de comando ou CSV.
+- **Motor local** (offline) para INPC/IPCA/IGP-DI via séries do BACEN + **cache** de resultados e **refresh** do catálogo a partir do site.
 
 > ⚠️ **Aviso:** este projeto **não é** um produto do TJTO nem da CRP Tecnologia. Ele usa a
 > API pública do módulo. **Cada execução cria um registro de cálculo público** no sistema do
@@ -72,6 +73,41 @@ Valor aceita `645.36` ou `645,36`.
 2. **Juros de mora exige termo inicial por parcela** (`--juros-mora` ou coluna `juros_mora`).
    Sem termo, os juros resultam em **R$ 0,00**.
 
+## Motor local, cache e refresh do catálogo
+
+**Motor local** (`--motor local`) calcula a correção **sem depender do Planjud** para
+**INPC, IPCA e IGP-DI** (termos ≥ 07/1995), usando as séries mensais do **BACEN (SGS)** —
+baixadas uma vez e cacheadas localmente. Resultados **idênticos ao Planjud** para os casos
+validados (ver [`references/motor-local.md`](references/motor-local.md)).
+
+```bash
+# forçar o motor local (offline depois do primeiro fetch)
+... --correcao INPC --data-base 2026-08 --parcela 645.36:2011-04-01 --motor local
+# deixar a ferramenta escolher (local quando aplicável, senão Planjud)
+... --correcao IPCA --data-base 2026-08 --parcela 645.36:2011-04-01 --motor auto
+```
+
+Fora do escopo (juros ≠ `SEM_JUROS`, EC 136, SELIC, termos < 07/1995 ou qualquer critério
+composto), o **padrão é o Planjud** — o motor local é opt-in, nunca silencioso.
+
+**Cache** — resultados por chave determinística (critério + parcelas + data-base + EC 136),
+TTL 30 dias; catálogo e séries também ficam em cache. Limpe com `--clear-cache`.
+
+```bash
+... --no-cache            # ignora o cache nesta execução
+... --cache-ttl 7         # validade do cache de resultados (dias)
+... --clear-cache         # apaga todo o cache
+```
+
+**Refresh do catálogo** — atualiza nomes/ids/**datas-base** dos critérios a partir da
+página `Create` do sistema (as datas-base sobem a cada mês):
+
+```bash
+... --refresh             # mostra e salva as mudanças do catálogo
+```
+
+Tudo respeita `PLANJUD_CACHE_DIR` (diretório base do cache) e `PLANJUD_CATALOG` (arquivo de catálogo).
+
 ## Uso — MCP (qualquer agente de IA)
 
 O cálculo é exposto como **ferramentas MCP** (`scripts/planjud_mcp.py`), descobertas
@@ -119,6 +155,7 @@ de *function calling*.
 ├── references/
 │   ├── criterios.md        # 16 critérios de correção + 12 de juros (com notas normativas)
 │   ├── mcp.md              # integração MCP por cliente, teste e pitfalls
+│   ├── motor-local.md      # motor offline (INPC/IPCA/IGP-DI via BACEN): escopo e validação
 │   └── tool_schema.json    # schema portátil de function calling
 ├── docs/
 │   ├── regras-de-negocio.md        # regras de negócio do módulo (extração completa)

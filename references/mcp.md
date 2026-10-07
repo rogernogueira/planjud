@@ -7,11 +7,16 @@
 
 ## Ferramentas expostas
 
-| Ferramenta | Para que serve | Entrada principal |
-|---|---|---|
-| `listar_criterios` | Descobrir os critérios de correção/juros (alias, GUID, início, data-base) | `tipo` = `correcao`\|`juros`\|`todos` |
-| `indice_disponivel` | Último índice publicado (data-base) e início de vigência de um critério | `correcao` |
-| `calcular_correcao` | Corrigir 1+ parcelas (com juros de mora opcionais, EC 136, SELIC) | `parcelas`, `correcao`, `juros`, `data_base`, … |
+| Ferramenta | Para que serve | Rede? | Entrada principal |
+|---|---|---|---|
+| `listar_criterios` | Descobrir os critérios de correção/juros (alias, GUID, início, data-base) | ❌ offline | `tipo` = `correcao`\|`juros`\|`todos` |
+| `indice_disponivel` | Último índice publicado (data-base) e início de vigência de um critério | ❌ offline | `correcao` |
+| `atualizar_catalogo` | Re-scrapeia o catálogo do site (nomes, ids **e datas-base**) e salva em cache | ✅ site TJTO | `base_url` |
+| `calcular_correcao` | Corrigir 1+ parcelas (juros opcionais, EC 136, SELIC) | ✅ | `parcelas`, `correcao`, `juros`, `data_base`, `motor`, … |
+
+`calcular_correcao` aceita `motor` = **`planjud`** (oficial, padrão) · **`local`**
+(INPC/IPCA/IGP-DI via BACEN, offline após cache) · **`auto`** (local quando aplicável).
+E `usar_cache` (padrão `true`) reaproveita resultados; a resposta traz `motor` e `de_cache`.
 
 `calcular_correcao` aceita parcelas como dict ou string:
 ```json
@@ -96,6 +101,15 @@ Ollama, Mistral…) consomem `references/tool_schema.json` — um array de funç
 formato OpenAI (`{"type":"function","function":{...}}`) com os mesmos 3 nomes e
 JSON Schema. Basta apontar o handler para o CLI (`planjud_calc.py`) ou importar as
 funções do `planjud_mcp.py`.
+
+## Cache e modo offline
+
+- **Cache de resultados** por chave determinística (critério + parcelas + data-base + EC 136),
+  TTL 30 dias, em `~/.cache/planjud-calculo/resultados.json`. Uma segunda chamada idêntica
+  devolve `de_cache: true` e **não** gera novo registro no Planjud.
+- **Catálogo** e **séries de índices** também ficam em cache. `atualizar_catalogo` reescreve o catálogo.
+- **Motor local** (`motor=local`) calcula INPC/IPCA/IGP-DI sem o Planjud (BACEN SGS, cache de 1 dia).
+- Tudo respeita `PLANJUD_CACHE_DIR` (diretório base do cache) — útil no `env:` do `mcp_servers`.
 
 ## Pitfalls
 

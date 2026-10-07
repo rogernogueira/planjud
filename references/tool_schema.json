@@ -5,7 +5,7 @@
       "type": "function",
       "function": {
         "name": "planjud_calcular_correcao",
-        "description": "Calcula a correção monetária (e juros de mora) de uma ou mais parcelas pelo sistema Planjud / Cálculo Geral do TJTO. Suporta MÚLTIPLAS parcelas, juros de mora por parcela, EC 136/2025 e SELIC (EC 113/2021). Retorna fator de correção, valor corrigido, juros, selic e total em reais, além do código oficial do cálculo.",
+        "description": "Calcula a correção monetária (e juros de mora) de uma ou mais parcelas pelo sistema Planjud / Cálculo Geral do TJTO. Suporta MÚLTIPLAS parcelas, juros de mora por parcela, EC 136/2025, SELIC (EC 113/2021) e um motor LOCAL offline para INPC/IPCA/IGP-DI (séries do BACEN). Retorna fator de correção, valor corrigido, juros, selic e total em reais, além do código oficial do cálculo.",
         "parameters": {
           "type": "object",
           "properties": {
@@ -27,15 +27,17 @@
             "juros": { "type": "string", "default": "SEM_JUROS", "description": "Critério de juros de mora. Ex.: SEM_JUROS, FAZENDA_GERAL, FAZENDA_SERVIDORES, FAZENDA_PREVIDENCIARIO, JUROS_6, JUROS_12, JUROS_6_12, TAXA_LEGAL." },
             "data_base": { "type": "string", "description": "Mês/ano da atualização (ex.: '2026-08' ou '08/2026'). Se omitido, usa o mês atual. A correção NÃO avança além do último índice publicado." },
             "juros_mora": { "type": "string", "description": "Termo inicial dos juros aplicado a todas as parcelas que não trouxerem o seu. Sem termo, os juros resultam em R$ 0,00." },
+            "motor": { "type": "string", "enum": ["planjud", "local", "auto"], "default": "planjud", "description": "Motor de cálculo: 'planjud' (oficial, padrão), 'local' (INPC/IPCA/IGP-DI via séries do BACEN — offline após cache; exige juros=SEM_JUROS e termos >= 07/1995) ou 'auto' (local quando aplicável, senão Planjud)." },
+            "usar_cache": { "type": "boolean", "default": true, "description": "Reaproveita resultados já calculados (cache local por critério + parcelas + data-base)." },
             "processo": { "type": "string", "description": "Número do processo (opcional; 20 dígitos)." },
             "orgao": { "type": "string", "description": "Órgão julgador (opcional)." },
             "requerente": { "type": "string" },
             "requerido": { "type": "string" },
             "observacao": { "type": "string" },
-            "ec136": { "type": "boolean", "default": false, "description": "Aplicar EC 136/2025 (Provimento 207/CNJ): principal pelo IPCA + juros 2% a.a. com teto SELIC < IPCA+2%." },
+            "ec136": { "type": "boolean", "default": false, "description": "Aplicar EC 136/2025 (Provimento 207/CNJ): principal pelo IPCA + juros 2% a.a. com teto SELIC < IPCA+2%. Força o motor Planjud." },
             "ec136_inicio": { "type": "string", "description": "Início da aplicação da EC 136 (mês/ano). Padrão 08/2025." },
             "ec136_pos_corte": { "type": "string", "enum": ["EC136", "CODIGO_CIVIL"], "default": "EC136", "description": "Critério pós-corte: EC 136 (2% a.a.) ou Código Civil (Taxa Legal)." },
-            "selic_cumulada": { "type": "boolean", "default": false, "description": "Cálculo cumulado com SELIC (EC 113/2021)." }
+            "selic_cumulada": { "type": "boolean", "default": false, "description": "Cálculo cumulado com SELIC (EC 113/2021). Força o motor Planjud." }
           },
           "required": ["parcelas"]
         }
@@ -45,7 +47,7 @@
       "type": "function",
       "function": {
         "name": "planjud_listar_criterios",
-        "description": "Lista os critérios de correção monetária e/ou juros de mora disponíveis no Planjud (alias, GUID, data de início e data-base/último índice publicado). Use antes de planjud_calcular_correcao para escolher os critérios.",
+        "description": "Lista os critérios de correção monetária e/ou juros de mora disponíveis no Planjud (alias, GUID, data de início e data-base/último índice publicado). Lê o catálogo LOCAL (offline) — rode planjud_atualizar_catalogo para refrescar as datas-base. Use antes de planjud_calcular_correcao.",
         "parameters": {
           "type": "object",
           "properties": {
@@ -58,11 +60,24 @@
       "type": "function",
       "function": {
         "name": "planjud_indice_disponivel",
-        "description": "Retorna o início de vigência e a data-base (último índice publicado) de um critério de correção. A correção não avança além dessa data-base, mesmo que se informe um mês maior.",
+        "description": "Retorna o início de vigência e a data-base (último índice publicado) de um critério de correção. A correção não avança além dessa data-base, mesmo que se informe um mês maior. Offline (catálogo local).",
         "parameters": {
           "type": "object",
           "properties": {
             "correcao": { "type": "string", "default": "INPC", "description": "Alias/nome/GUID do critério de correção (ex.: INPC, IPCA)." }
+          }
+        }
+      }
+    },
+    {
+      "type": "function",
+      "function": {
+        "name": "planjud_atualizar_catalogo",
+        "description": "Atualiza o catálogo de critérios (nomes, ids e datas-base) a partir do site do Planjud, mesclando ao snapshot local e salvando em cache. Use quando planjud_listar_criterios/planjud_indice_disponivel parecerem defasados (as datas-base sobem a cada mês).",
+        "parameters": {
+          "type": "object",
+          "properties": {
+            "base_url": { "type": "string", "default": "https://app.tjto.jus.br/planjud", "description": "URL base do Planjud." }
           }
         }
       }

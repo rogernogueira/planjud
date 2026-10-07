@@ -28,11 +28,12 @@ from __future__ import annotations
 
 import argparse
 import csv
+import hashlib
 import json
+import os
 import re
 import sys
 import unicodedata
-import uuid
 from datetime import date, datetime
 
 try:
@@ -40,7 +41,6 @@ try:
 except ImportError:  # pragma: no cover
     sys.exit("É necessário o pacote 'requests'. Instale com: uv pip install requests  (ou pip install requests)")
 
-DEFAULT_BASE_URL = "https://app.tjto.edu.br"  # placeholder (sobrescrito abaixo)
 DEFAULT_BASE_URL = "https://app.tjto.jus.br/planjud"
 
 # ---------------------------------------------------------------------------
@@ -82,6 +82,161 @@ JUROS = {
 }
 
 SELIC_CORRECOES = {"SELIC_FAZENDA", "SELIC_TRIBUTARIO"}
+
+
+# ---------------------------------------------------------------------------
+# Catálogo: snapshot embutido + cache/refresh a partir da página do sistema
+# ---------------------------------------------------------------------------
+def cache_dir():
+    """Diretório de cache (catálogo, séries e resultados). Sobrescreva com PLANJUD_CACHE_DIR."""
+    return os.environ.get("PLANJUD_CACHE_DIR") or os.path.expanduser("~/.cache/planjud-calculo")
+
+
+def _catalogo_path(caminho=None):
+    if caminho:
+        return caminho
+    return os.environ.get("PLANJUD_CATALOG") or os.path.join(cache_dir(), "catalogo.json")
+
+
+def _resultados_path():
+    return os.path.join(cache_dir(), "resultados.json")
+
+
+def _slug(s):
+    return re.sub(r"[^A-Z0-9]+", "_",
+                  unicodedata.normalize("NFKD", str(s)).encode("ascii", "ignore").decode().upper()).strip("_")
+
+
+def _extract_json_array(text, key):
+    """Extrai o array JSON associado a `key`, respeitando strings (colchetes dentro de aspas)."""
+    m = re.search(re.escape(key) + r"\s*:", text)
+    if not m:
+        return None
+    j = text.find("[", m.end())
+    if j < 0:
+        return None
+    depth, in_str, esc = 0, False, False
+    for k in range(j, len(text)):
+        c = text[k]
+        if in_str:
+            if esc:
+                esc = False
+            elif c == "\\":
+                esc = True
+            elif c == '"':
+                in_str = False
+            continue
+        if c == '"':
+            in_str = True
+        elif c == "[":
+            depth += 1
+        elif c == "]":
+            depth -= 1
+            if depth == 0:
+                return json.loads(text[j:k + 1])
+    return None
+
+
+def extrair_opcoes_pagina(html):
+    """Extrai (opcoes_correcao, opcoes_juros) do HTML da tela Create."""
+    return (_extract_json_array(html, "opcoesCriterioCorrecaoMonetaria") or [],
+            _extract_json_array(html, "opcoesCriterioJurosMora") or [])
+
+
+def buscar_catalogo_live(base_url=DEFAULT_BASE_URL, verify=True, timeout=60):
+    """Baixa a página Create e extrai as opções vivas (com datas-base atualizadas)."""
+    s = requests.Session()
+    s.verify = verify
+    r = s.get(base_url.rstrip("/") + "/PublicoCalculoGeral/Create", timeout=timeout)
+    r.raise_for_status()
+    return extrair_opcoes_pagina(r.text)
+
+
+def mesclar_catalogo(live_correcao, live_juros):
+    """Mescla as opções vivas ao snapshot, preservando os aliases por id."""
+    corr = dict(CORRECAO)
+    by_id = {v[0]: k for k, v in CORRECAO.items()}
+    for o in live_correcao:
+        oid = o.get("id")
+        if not oid:
+            continue
+        ini = (o.get("dataInicioCorrecao") or "")[:10] or None
+        db = (o.get("dataBase") or "")[:10] or None
+        if oid in by_id:
+            alias = by_id[oid]
+            _, oini, odb = corr[alias]
+            corr[alias] = (oid, ini or oini, db or odb)
+        else:
+            alias = _slug(o.get("descricao") or oid)[:40] or ("ID_" + oid[:8])
+            base_alias, n = alias, 2
+            while alias in corr:
+                alias = "%s_%d" % (base_alias, n)
+                n += 1
+            corr[alias] = (oid, ini, db)
+    jur = dict(JUROS)
+    ids_j = set(JUROS.values())
+    for o in live_juros:
+        oid = o.get("id")
+        if not oid or oid in ids_j:
+            continue
+        alias = _slug(o.get("nome") or oid)[:40] or ("ID_" + oid[:8])
+        base_alias, n = alias, 2
+        while alias in jur:
+            alias = "%s_%d" % (base_alias, n)
+            n += 1
+        jur[alias] = oid
+        ids_j.add(oid)
+    return {"correcao": corr, "juros": jur}
+
+
+_CATALOGO = {"correcao": None, "juros": None}
+
+
+def carregar_catalogo(caminho=None, usar_cache=True):
+    """Catálogo efetivo: snapshot embutido, sobreposto pelo cache (se existir)."""
+    global _CATALOGO
+    if _CATALOGO["correcao"] is not None and caminho is None:
+        return _CATALOGO
+    corr, jur = dict(CORRECAO), dict(JUROS)
+    if usar_cache:
+        p = _catalogo_path(caminho)
+        if os.path.exists(p):
+            try:
+                d = json.loads(open(p, encoding="utf-8").read())
+                corr = {k: tuple(v) for k, v in d["correcao"].items()}
+                jur = dict(d["juros"])
+            except Exception:
+                pass
+    _CATALOGO = {"correcao": corr, "juros": jur}
+    return _CATALOGO
+
+
+def salvar_catalogo(cat, caminho=None):
+    global _CATALOGO
+    p = _catalogo_path(caminho)
+    os.makedirs(os.path.dirname(os.path.abspath(p)), exist_ok=True)
+    with open(p, "w", encoding="utf-8") as fh:
+        json.dump({"salvo_em": datetime.now().isoformat(timespec="seconds"),
+                   "correcao": {k: list(v) for k, v in cat["correcao"].items()},
+                   "juros": cat["juros"]}, fh, ensure_ascii=False, indent=2)
+    _CATALOGO = cat
+    return p
+
+
+def diferenciar_catalogo(antigo, novo):
+    """Mudanças legíveis (novos critérios e datas-base alteradas)."""
+    mud = []
+    a, n = antigo["correcao"], novo["correcao"]
+    for alias, (oid, _ini, db) in n.items():
+        if alias not in a:
+            mud.append("+ correção NOVO: %s (id %s)" % (alias, oid))
+        elif a[alias][2] != db:
+            mud.append("~ correção %s: data-base %s -> %s" % (alias, a[alias][2], db))
+    aj, nj = antigo["juros"], novo["juros"]
+    for alias, oid in nj.items():
+        if alias not in aj:
+            mud.append("+ juros NOVO: %s (id %s)" % (alias, oid))
+    return mud
 
 
 def _norm(s: str) -> str:
@@ -271,6 +426,187 @@ class Planjud:
 
 
 # ---------------------------------------------------------------------------
+# Cache de resultados (por critério + parcelas + data-base)
+# ---------------------------------------------------------------------------
+def _cache_key(payload):
+    rel = {
+        "cj": payload["criterioCorrecaoMonetariaJurosMora"],
+        "parcelas": sorted(
+            (x["valor"], x["dataJurosCorrecao"], x.get("dataJurosMora"), x["nomeParcela"])
+            for x in payload["listaPartesParcelas"]),
+        "hon": payload.get("honorariosAdvocaticios", {}).get("tipoHonarioAdvocaticios"),
+        "hons": payload.get("honorarioAdvocaticioSentenca", {}).get("tipoHonarioAdvocaticios"),
+        "m523": payload.get("multaArt523"),
+        "mdesc": payload.get("multaDescumprimentoObrigacao"),
+        "ec": payload.get("aplicarEC136"),
+    }
+    s = json.dumps(rel, ensure_ascii=False, sort_keys=True, default=str)
+    return hashlib.sha256(s.encode("utf-8")).hexdigest()[:16]
+
+
+def _cache_ler():
+    try:
+        return json.loads(open(_resultados_path(), encoding="utf-8").read())
+    except Exception:
+        return {}
+
+
+def _cache_gravar(d):
+    os.makedirs(cache_dir(), exist_ok=True)
+    tmp = _resultados_path() + ".tmp"
+    with open(tmp, "w", encoding="utf-8") as fh:
+        json.dump(d, fh, ensure_ascii=False)
+    os.replace(tmp, _resultados_path())
+
+
+def executar_calculo(payload, base_url=DEFAULT_BASE_URL, verify=True, timeout=60,
+                     use_cache=True, ttl_dias=30):
+    """Executa o cálculo no Planjud, com cache local opcional por chave determinística."""
+    key = _cache_key(payload) if use_cache else None
+    if key:
+        e = _cache_ler().get(key)
+        if e:
+            try:
+                if (datetime.now() - datetime.fromisoformat(e["ts"])).days < ttl_dias:
+                    r = dict(e["resultado"])
+                    r["_cache"] = True
+                    r["_cache_ts"] = e["ts"]
+                    return r
+            except Exception:
+                pass
+    res = Planjud(base_url=base_url, verify=verify, timeout=timeout).calcular(payload)
+    res["_cache"] = False
+    if key:
+        d = _cache_ler()
+        d[key] = {"ts": datetime.now().isoformat(timespec="seconds"),
+                  "resultado": {k: v for k, v in res.items() if k != "_cache"}}
+        _cache_gravar(d)
+    return res
+
+
+# ---------------------------------------------------------------------------
+# Motor local — INPC/IPCA/IGP-DI via séries do BACEN (SGS) — offline após cache
+# ---------------------------------------------------------------------------
+SGS_SERIES = {"INPC": 188, "IPCA": 433, "IGP_DI": 190}   # validados idênticos ao Planjud
+LOCAL_TERMO_MINIMO = (1995, 7)                            # restrito ao pós-Plano Real
+
+
+def _sgs_path(serie):
+    return os.path.join(cache_dir(), "sgs_%s.json" % serie)
+
+
+def buscar_serie_sgs(serie, usar_cache=True, ttl_dias=1, timeout=60):
+    """Séries mensais (%) do BACEN SGS. Guarda em cache local (padrão: 1 dia)."""
+    p = _sgs_path(serie)
+    if usar_cache and os.path.exists(p):
+        try:
+            j = json.loads(open(p, encoding="utf-8").read())
+            if (datetime.now() - datetime.fromisoformat(j["salvo_em"])).days < ttl_dias:
+                return {tuple(int(x) for x in k.split("-")): v for k, v in j["dados"].items()}
+        except Exception:
+            pass
+    url = ("https://api.bcb.gov.br/dados/serie/bcdata.sgs.%s/dados"
+           "?formato=json&dataInicial=01/01/1995&dataFinal=31/12/2099" % serie)
+    r = requests.get(url, timeout=timeout)
+    r.raise_for_status()
+    dados = {}
+    for x in r.json():
+        dd, mm, yy = x["data"].split("/")
+        dados[(int(yy), int(mm))] = float(x["valor"])
+    if usar_cache and dados:
+        os.makedirs(cache_dir(), exist_ok=True)
+        tmp = p + ".tmp"
+        with open(tmp, "w", encoding="utf-8") as fh:
+            json.dump({"salvo_em": datetime.now().isoformat(timespec="seconds"), "serie": serie,
+                       "dados": {"%d-%02d" % k: v for k, v in dados.items()}}, fh, ensure_ascii=False)
+        os.replace(tmp, p)
+    return dados
+
+
+def _brl_str(v):
+    neg = v < 0
+    inteiro, dec = ("%.2f" % abs(v)).split(".")
+    out = ""
+    while len(inteiro) > 3:
+        out = "." + inteiro[-3:] + out
+        inteiro = inteiro[:-3]
+    return ("-R$ " if neg else "R$ ") + inteiro + out + "," + dec
+
+
+def calcular_local(parcelas, ckey, data_base, usar_cache=True, ttl_indice_dias=1):
+    """Corrige parcelas localmente; devolve um dict no MESMO formato bruto do Planjud.
+
+    Fator = produto de (1 + variação/100) do MÊS DO TERMO até o MÊS DA DATA-BASE, inclusive.
+    """
+    serie = SGS_SERIES.get(ckey)
+    if serie is None:
+        raise ValueError("critério '%s' não suportado pelo motor local (disponíveis: %s)"
+                         % (ckey, ", ".join(SGS_SERIES)))
+    base = (data_base.year, data_base.month)
+    # valida ANTES de buscar a série (permite recusar sem rede)
+    for p in parcelas:
+        t = (p["data"].year, p["data"].month)
+        if t < LOCAL_TERMO_MINIMO:
+            raise ValueError("motor local cobre apenas termos a partir de 07/1995 (recebido %02d/%d)"
+                             % (p["data"].month, p["data"].year))
+        if t > base:
+            raise ValueError("termo %02d/%d posterior à data-base" % (p["data"].month, p["data"].year))
+    d = buscar_serie_sgs(serie, usar_cache=usar_cache, ttl_dias=ttl_indice_dias)
+    itens, total = [], 0.0
+    for p in parcelas:
+        termo = p["data"]
+        t = (termo.year, termo.month)
+        f = 1.0
+        y, m = t
+        while (y, m) <= base:
+            if (y, m) not in d:
+                raise ValueError("índice %s indisponível para %02d/%d" % (ckey, m, y))
+            f *= 1.0 + d[(y, m)] / 100.0
+            m += 1
+            if m == 13:
+                y, m = y + 1, 1
+        corrigido = p["valor"] * f
+        total += corrigido
+        itens.append({
+            "nomeParcela": p["nome"],
+            "termoInicioCorrecaoMonetariaString": "%02d/%d" % (termo.month, termo.year),
+            "termoInicioJurosMoraString": "",
+            "valorParcela": p["valor"],
+            "fatorCorrecao": ("%.7f" % f).replace(".", ","),
+            "valorCorrigido": corrigido,
+            "valorJurosMora": 0.0,
+            "valorSelic": 0.0,
+            "total": corrigido,
+        })
+    return {
+        "codigoCalculo": "LOCAL-%s" % ckey,
+        "dataBase": "%04d-%02d-01T00:00:00" % (data_base.year, data_base.month),
+        "criterioCorrecaoMonetario": "%s — cálculo local (BACEN SGS %s)" % (ckey, serie),
+        "criterioJurosMora": "Sem inclusão de juros de mora.",
+        "partesParcelas": {"parcelasDetalhadoDetalhado": [{"listaPartesParcelasDetalhados": itens}]},
+        "subTotal1": {"valorCorrigido": total, "valorCorrigidoString": _brl_str(total)},
+        "total": {"total": total, "valorCorrigidoString": _brl_str(total)},
+        "aplicarEC136": False,
+        "_motor": "local",
+        "_fonte": "BACEN SGS %s" % serie,
+    }
+
+
+def motor_efetivo(motor, ckey, jkey, parcelas, ec136, selic_cumulada):
+    """Decide o motor: 'planjud' (oficial) ou 'local' (offline). 'auto' escolhe o possível."""
+    if motor == "planjud":
+        return "planjud"
+    ok = (ckey in SGS_SERIES and jkey == "SEM_JUROS" and not ec136 and not selic_cumulada
+          and all((p["data"].year, p["data"].month) >= LOCAL_TERMO_MINIMO for p in parcelas))
+    if motor == "local":
+        if not ok:
+            raise ValueError("motor local indisponível: exige critério em %s, juros SEM_JUROS, "
+                             "sem EC 136 e termos a partir de 07/1995" % ", ".join(SGS_SERIES))
+        return "local"
+    return "local" if ok else "planjud"   # auto
+
+
+# ---------------------------------------------------------------------------
 # Apresentação
 # ---------------------------------------------------------------------------
 def extrair_resultado(res: dict) -> dict:
@@ -318,6 +654,8 @@ def render(res: dict) -> None:
     print(f"Data-base         : {str(res.get('dataBase'))[:7]}")
     print(f"Correção          : {res.get('criterioCorrecaoMonetario')}")
     print(f"Juros de mora     : {res.get('criterioJurosMora')}")
+    print(f"Motor             : {res.get('_motor', 'planjud')}"
+          + ("  (do cache local)" if res.get("_cache") else ""))
     print("-" * 96)
     print(f"{'Item':>4}  {'Nome':<22} {'Termo':<8} {'Juros':<8} {'Valor':>12} {'Fator':>11} {'Corrigido':>14} {'Juros R$':>11} {'Total':>14}")
     print("-" * 96)
@@ -368,18 +706,58 @@ def main(argv=None) -> int:
     ap.add_argument("--selic-cumulada", action="store_true", help="cálculo cumulado com SELIC (EC 113/21)")
     ap.add_argument("--base-url", default=DEFAULT_BASE_URL)
     ap.add_argument("--insecure", action="store_true", help="não validar o certificado TLS")
+    ap.add_argument("--motor", default="planjud", choices=["planjud", "local", "auto"],
+                    help="motor de cálculo: planjud (oficial, padrão), local (INPC/IPCA/IGP-DI via BACEN) ou auto")
+    ap.add_argument("--refresh", action="store_true",
+                    help="atualiza o catálogo de critérios a partir do site (datas-base) e sai")
+    ap.add_argument("--catalog", default=None, help="caminho de um arquivo de catálogo JSON a usar")
+    ap.add_argument("--clear-cache", action="store_true", help="apaga todo o cache local e sai")
+    ap.add_argument("--no-cache", action="store_true", help="não usar nem gravar o cache de resultados")
+    ap.add_argument("--cache-ttl", type=int, default=30, help="validade do cache de resultados, em dias (padrão 30)")
+    ap.add_argument("--ttl-indice", type=int, default=1, help="validade do cache das séries de índices, em dias (padrão 1)")
     ap.add_argument("--json", action="store_true", help="imprimir o JSON bruto do resultado")
     ap.add_argument("--dry-run", action="store_true", help="apenas montar e mostrar o payload")
     ap.add_argument("--list", action="store_true", help="listar critérios disponíveis e sair")
     args = ap.parse_args(argv)
 
+    if args.clear_cache:
+        import shutil
+        shutil.rmtree(cache_dir(), ignore_errors=True)
+        print(f"Cache apagado: {cache_dir()}")
+        return 0
+
+    if args.refresh:
+        try:
+            live_c, live_j = buscar_catalogo_live(args.base_url, verify=not args.insecure)
+        except Exception as e:
+            print(f"Não foi possível ler o catálogo do site: {e}", file=sys.stderr)
+            return 1
+        if not live_c:
+            print("O site não retornou o catálogo esperado.", file=sys.stderr)
+            return 1
+        antigo = carregar_catalogo(args.catalog, usar_cache=True)
+        novo = mesclar_catalogo(live_c, live_j)
+        mud = diferenciar_catalogo(antigo, novo)
+        p = salvar_catalogo(novo, args.catalog)
+        print(f"Catálogo atualizado: {len(novo['correcao'])} critérios de correção, "
+              f"{len(novo['juros'])} de juros  ->  {p}")
+        if mud:
+            print("Mudanças:")
+            for m in mud:
+                print("  " + m)
+        else:
+            print("Nenhuma mudança em relação ao catálogo atual.")
+        return 0
+
     if args.list:
+        cat = carregar_catalogo(args.catalog, usar_cache=True)
         print("CORREÇÃO MONETÁRIA (nome -> id | início | data-base):")
-        for k, (i, ini, db) in CORRECAO.items():
-            print(f"  {k:<22} {i}  inicio={ini}  dataBase={db}")
+        for k, (i, ini, db) in cat["correcao"].items():
+            print(f"  {k:<24} {i}  inicio={ini}  dataBase={db}")
         print("\nJUROS DE MORA (nome -> id):")
-        for k, i in JUROS.items():
-            print(f"  {k:<22} {i}")
+        for k, i in cat["juros"].items():
+            print(f"  {k:<24} {i}")
+        print(f"\nMotor local disponível para: {', '.join(SGS_SERIES)} (termos >= 07/1995, juros SEM_JUROS).")
         return 0
 
     # parcelas
@@ -394,14 +772,15 @@ def main(argv=None) -> int:
             if not p.get("juros_mora"):
                 p["juros_mora"] = jm
 
-    # critérios
-    ckey, cid = resolve(CORRECAO, args.correcao)
+    # critérios (catálogo efetivo: snapshot embutido + cache/refresh)
+    cat = carregar_catalogo(args.catalog, usar_cache=True)
+    ckey, cid = resolve(cat["correcao"], args.correcao)
     # SELIC força juros = SEM JUROS
     if ckey in SELIC_CORRECOES and _norm(args.juros) != "SEM_JUROS":
         print(f"[aviso] critério {ckey} usa SELIC; juros forçado para SEM_JUROS.", file=sys.stderr)
-        jkey, jid = "SEM_JUROS", JUROS["SEM_JUROS"]
+        jkey, jid = "SEM_JUROS", cat["juros"]["SEM_JUROS"]
     else:
-        jkey, jid = resolve(JUROS, args.juros)
+        jkey, jid = resolve(cat["juros"], args.juros)
 
     # data-base
     if args.data_base:
@@ -410,11 +789,19 @@ def main(argv=None) -> int:
         data_base = date.today().replace(day=1)
 
     # valida faixa de datas
-    if ckey in CORRECAO:
-        ini = datetime.strptime(CORRECAO[ckey][1], "%Y-%m-%d").date()
+    cinfo = cat["correcao"].get(ckey)
+    if cinfo and cinfo[1]:
+        ini = datetime.strptime(cinfo[1], "%Y-%m-%d").date()
         for p in parcelas:
             if p["data"] < ini:
                 print(f"[aviso] parcela '{p['nome']}' ({p['data']}) é anterior ao início do critério {ckey} ({ini}).", file=sys.stderr)
+
+    # motor (planjud | local | auto)
+    try:
+        motor = motor_efetivo(args.motor, ckey, jkey, parcelas, args.ec136, args.selic_cumulada)
+    except ValueError as e:
+        print(f"[erro] {e}", file=sys.stderr)
+        return 2
 
     payload = Planjud.build_payload(
         parcelas, cid, jid, data_base, args.processo, args.orgao,
@@ -426,8 +813,17 @@ def main(argv=None) -> int:
         print(json.dumps(payload, ensure_ascii=False, indent=2, default=str))
         return 0
 
-    pj = Planjud(base_url=args.base_url, verify=not args.insecure)
-    res = pj.calcular(payload)
+    try:
+        if motor == "local":
+            res = calcular_local(parcelas, ckey, data_base,
+                                 usar_cache=not args.no_cache, ttl_indice_dias=args.ttl_indice)
+        else:
+            res = executar_calculo(payload, base_url=args.base_url, verify=not args.insecure,
+                                   use_cache=not args.no_cache, ttl_dias=args.cache_ttl)
+    except Exception as e:
+        print(f"[erro] {e}", file=sys.stderr)
+        return 1
+
     if args.json:
         print(json.dumps(res, ensure_ascii=False, indent=2))
     else:
