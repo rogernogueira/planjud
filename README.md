@@ -10,12 +10,13 @@
   Débitos Gerais, Fazenda Pública, Previdenciário, Débitos Gerais + IPCA (Lei 14.905/2024)…
 - **Regimes especiais:** EC 113/2021 (SELIC), EC 136/2025 (Prov. 207/CNJ), Lei 14.905/2024, Taxa Legal (art. 406, §1º, CC)
 - **Múltiplas parcelas** por linha de comando ou CSV.
-- **Motor local** (offline) para INPC/IPCA/IGP-DI via séries do BACEN + **cache** de resultados e **refresh** do catálogo a partir do site.
+- **Motor local (padrão)** — INPC/IPCA/IGP-DI calculados **offline** via séries do BACEN, sem criar registro público; o motor oficial do Planjud fica a um `--motor planjud`. Inclui **cache** de resultados e **refresh** do catálogo a partir do site.
 
 > ⚠️ **Aviso:** este projeto **não é** um produto do TJTO nem da CRP Tecnologia. Ele usa a
-> API pública do módulo. **Cada execução cria um registro de cálculo público** no sistema do
-> tribunal (retorna um código). Os valores são informativos — **não substituem** o cálculo
-> oficial nem a conferência por um(a) contador(a) judicial.
+> API pública do módulo. Ao usar o **motor Planjud** (`--motor planjud`/`auto`), **cada
+> execução cria um registro de cálculo público** no sistema do tribunal (retorna um código).
+> Os valores são informativos — **não substituem** o cálculo oficial nem a conferência por
+> um(a) contador(a) judicial.
 
 ---
 
@@ -53,8 +54,9 @@ uv run --with requests scripts/planjud_calc.py --correcao INPC --data-base 2026-
 uv run --with requests scripts/planjud_calc.py --correcao IPCA --csv examples/parcelas.csv
 
 # juros de mora (termo inicial por parcela; sem termo => R$ 0,00)
+#   juros não é coberto pelo motor local (padrão) -> use --motor planjud
 uv run --with requests scripts/planjud_calc.py --correcao FAZENDA_PUBLICA \
-    --juros FAZENDA_GERAL --juros-mora 2011-04 --parcela 645.36:2011-04-01
+    --juros FAZENDA_GERAL --juros-mora 2011-04 --parcela 645.36:2011-04-01 --motor planjud
 
 # auxiliares
 ... --list      # lista todos os critérios (nome → GUID)
@@ -75,20 +77,27 @@ Valor aceita `645.36` ou `645,36`.
 
 ## Motor local, cache e refresh do catálogo
 
-**Motor local** (`--motor local`) calcula a correção **sem depender do Planjud** para
+**Motor local (padrão)** calcula a correção **sem depender do Planjud** para
 **INPC, IPCA e IGP-DI** (termos ≥ 07/1995), usando as séries mensais do **BACEN (SGS)** —
 baixadas uma vez e cacheadas localmente. Resultados **idênticos ao Planjud** para os casos
 validados (ver [`references/motor-local.md`](references/motor-local.md)).
 
 ```bash
-# forçar o motor local (offline depois do primeiro fetch)
-... --correcao INPC --data-base 2026-08 --parcela 645.36:2011-04-01 --motor local
+# padrão: motor local (offline depois do primeiro fetch; erro se o caso não for suportado)
+... --correcao INPC --data-base 2026-08 --parcela 645.36:2011-04-01
+
+# forçar o motor oficial do Planjud (usa a API do TJTO; cria registro público)
+... --correcao FAZENDA_PUBLICA --juros FAZENDA_GERAL --juros-mora 2011-04 \
+    --parcela 645.36:2011-04-01 --motor planjud
+
 # deixar a ferramenta escolher (local quando aplicável, senão Planjud)
 ... --correcao IPCA --data-base 2026-08 --parcela 645.36:2011-04-01 --motor auto
 ```
 
-Fora do escopo (juros ≠ `SEM_JUROS`, EC 136, SELIC, termos < 07/1995 ou qualquer critério
-composto), o **padrão é o Planjud** — o motor local é opt-in, nunca silencioso.
+O motor local **recusa** (erro explícito, sem cair no Planjud silenciosamente) os casos
+fora do escopo: **juros de mora** (≠ `SEM_JUROS`), **EC 136/2025**, **SELIC (EC 113/2021)**,
+termos **< 07/1995** ou **critério composto**. Para esses (ou para o resultado oficial),
+use `--motor planjud` (oficial) ou `--motor auto`.
 
 **Cache** — resultados por chave determinística (critério + parcelas + data-base + EC 136),
 TTL 30 dias; catálogo e séries também ficam em cache. Limpe com `--clear-cache`.
@@ -114,7 +123,7 @@ O cálculo é exposto como **ferramentas MCP** (`scripts/planjud_mcp.py`), desco
 automaticamente por **Claude Desktop, Cursor, VS Code, Hermes, Zed** … O schema é gerado dos
 *type hints* e *docstrings* — sem *glue code*.
 
-Ferramentas: `listar_criterios`, `indice_disponivel`, `calcular_correcao`.
+Ferramentas: `listar_criterios`, `indice_disponivel`, `atualizar_catalogo`, `calcular_correcao`.
 
 ```bash
 # rodar o servidor (stdio)
@@ -151,7 +160,7 @@ de *function calling*.
 .
 ├── scripts/
 │   ├── planjud_calc.py     # CLI (núcleo: catálogo, resolução, HTTP, extração de resultado)
-│   └── planjud_mcp.py      # servidor MCP (stdio) com as 3 ferramentas
+│   └── planjud_mcp.py      # servidor MCP (stdio) com as 4 ferramentas
 ├── references/
 │   ├── criterios.md        # 16 critérios de correção + 12 de juros (com notas normativas)
 │   ├── mcp.md              # integração MCP por cliente, teste e pitfalls
@@ -182,8 +191,9 @@ pytest -q
   [`docs/extracao-e-proveniencia.md`](docs/extracao-e-proveniencia.md).
 - O **catálogo de critérios e datas-base** em `scripts/planjud_calc.py` é um **snapshot**.
   Índices e datas-base sobem a cada mês — confira com `--list` e atualize se necessário.
-- O motor de cálculo é **server-side** no Planjud; esta ferramenta não reimplementa a
-  matemática, apenas dirige o sistema oficial e lê o resultado.
+- O motor de cálculo **oficial** é *server-side* no Planjud (usado com `--motor planjud|auto`);
+  o **motor local** (padrão) reproduz INPC/IPCA/IGP-DI a partir das séries do BACEN e foi
+  validado contra o Planjud (ver [`references/motor-local.md`](references/motor-local.md)).
 
 ## Licença
 

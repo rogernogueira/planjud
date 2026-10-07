@@ -165,7 +165,7 @@ def calcular_correcao(
     juros: str = "SEM_JUROS",
     data_base: Optional[str] = None,
     juros_mora: Optional[str] = None,
-    motor: str = "planjud",
+    motor: str = "local",
     processo: Optional[str] = None,
     orgao: Optional[str] = None,
     requerente: Optional[str] = None,
@@ -190,8 +190,10 @@ def calcular_correcao(
             atual. A correção capa no último índice publicado.
         juros_mora: termo inicial dos juros aplicado a todas as parcelas sem o seu.
             Obrigatório para haver juros (senão = R$ 0,00).
-        motor: "planjud" (oficial, padrão) | "local" (INPC/IPCA/IGP-DI via BACEN,
-            offline após cache) | "auto" (local quando aplicável, senão Planjud).
+        motor: "local" (padrão; INPC/IPCA/IGP-DI via BACEN, offline após cache) |
+            "planjud" (oficial — usa a API do TJTO e cria registro público) |
+            "auto" (local quando aplicável, senão Planjud). O local exige juros=SEM_JUROS,
+            sem EC 136/SELIC e termos >= 07/1995; fora disso, use "planjud" ou "auto".
         processo, orgao, requerente, requerido, observacao: metadados opcionais.
         ec136: aplica o regime da EC 136/2025 (Prov. 207/CNJ). Força o motor Planjud.
         ec136_inicio: início da EC 136 (mês/ano); padrão 08/2025.

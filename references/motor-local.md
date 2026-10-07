@@ -13,8 +13,8 @@
 | Juros de mora = **SEM_JUROS** | Juros de mora (qualquer regra) |
 | — | **EC 136/2025**, **SELIC (EC 113/2021)** |
 
-Se o caso sai do escopo, use `--motor planjud` (padrão) — ou `--motor auto`, que escolhe
-o local **quando aplicável** e cai no Planjud caso contrário.
+Se o caso sai do escopo, use `--motor planjud` (oficial — cria registro público no TJTO)
+— ou `--motor auto`, que escolhe o local **quando aplicável** e cai no Planjud caso contrário.
 
 ## Convenção (validada contra o Planjud)
 
@@ -55,27 +55,36 @@ mesmo sem meses faltantes — provavelmente revisão/versão distinta do FGV. Co
 ## Uso
 
 ```bash
-# forçar o motor local (erro se o caso não for suportado)
+# padrão: motor local (erro se o caso não for suportado)
 uv run --with requests scripts/planjud_calc.py --correcao INPC \
-    --data-base 2026-08 --parcela 645.36:2011-04-01 --motor local
+    --data-base 2026-08 --parcela 645.36:2011-04-01
+
+# forçar o motor oficial (usa a API do TJTO; cria registro público)
+... --motor planjud
 
 # deixar a ferramenta escolher (local quando possível, senão Planjud)
 ... --motor auto
 
-# no MCP: parâmetro "motor" em calcular_correcao
+# no MCP: parâmetro "motor" em calcular_correcao (padrão "local")
 {"tool": "calcular_correcao", "args": {"parcelas": [...], "correcao": "IPCA",
-                                       "data_base": "2026-08", "motor": "local"}}
+                                       "data_base": "2026-08", "motor": "planjud"}}
 ```
 
-## Por que o padrão continua sendo o Planjud
+## Por que o motor local é o padrão
 
-Resultados locais são **idênticos** para os casos validados, mas a validação cobre um
-recorte (2011→2026). Para uso jurídico, o número **oficial** é o que vale — por isso o
-motor local é **opt-in** (`--motor local|auto`), nunca silencioso. Encare o motor local como:
+O motor local é o **padrão** (`--motor local`): os casos que ele cobre são calculados
+**offline**, sem rede e **sem criar registro público** no Planjud. Os resultados são
+**idênticos** ao sistema oficial nos casos validados (tabela acima), mas a validação
+cobre um recorte — por isso o motor local **recusa** (erro explícito) qualquer caso que
+não saiba calcular, em vez de "adivinhar". Use:
 
-- **ataque/cross-check** do resultado oficial;
-- **operação offline** quando o site do TJTO está indisponível;
-- **velocidade** e ausência de registro público.
+- `--motor planjud` — força o motor **oficial** (usa a API do TJTO; cria registro público).
+  Obrigatório para juros de mora, EC 136/2025, SELIC (EC 113/2021), critérios compostos
+  ou termos anteriores a 07/1995.
+- `--motor auto` — local quando aplicável, **senão** Planjud automaticamente.
+
+Encare o motor local como o caminho **rápido e offline**, e o Planjud como a
+**referência oficial** para tudo o que o local não cobre.
 
 ## Cache de resultados (item relacionado)
 

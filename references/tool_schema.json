@@ -27,7 +27,7 @@
             "juros": { "type": "string", "default": "SEM_JUROS", "description": "Critério de juros de mora. Ex.: SEM_JUROS, FAZENDA_GERAL, FAZENDA_SERVIDORES, FAZENDA_PREVIDENCIARIO, JUROS_6, JUROS_12, JUROS_6_12, TAXA_LEGAL." },
             "data_base": { "type": "string", "description": "Mês/ano da atualização (ex.: '2026-08' ou '08/2026'). Se omitido, usa o mês atual. A correção NÃO avança além do último índice publicado." },
             "juros_mora": { "type": "string", "description": "Termo inicial dos juros aplicado a todas as parcelas que não trouxerem o seu. Sem termo, os juros resultam em R$ 0,00." },
-            "motor": { "type": "string", "enum": ["planjud", "local", "auto"], "default": "planjud", "description": "Motor de cálculo: 'planjud' (oficial, padrão), 'local' (INPC/IPCA/IGP-DI via séries do BACEN — offline após cache; exige juros=SEM_JUROS e termos >= 07/1995) ou 'auto' (local quando aplicável, senão Planjud)." },
+            "motor": { "type": "string", "enum": ["local", "planjud", "auto"], "default": "local", "description": "Motor de cálculo: 'local' (padrão — INPC/IPCA/IGP-DI via séries do BACEN, offline após cache; exige juros=SEM_JUROS e termos >= 07/1995), 'planjud' (oficial — usa a API do TJTO e cria registro público) ou 'auto' (local quando aplicável, senão Planjud)." },
             "usar_cache": { "type": "boolean", "default": true, "description": "Reaproveita resultados já calculados (cache local por critério + parcelas + data-base)." },
             "processo": { "type": "string", "description": "Número do processo (opcional; 20 dígitos)." },
             "orgao": { "type": "string", "description": "Órgão julgador (opcional)." },

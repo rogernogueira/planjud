@@ -182,9 +182,30 @@ def test_motor_local_recusa_antes_de_1995_e_criterio_nao_suportado():
 def test_motor_efetivo_decisoes():
     ps = [pc.parse_parcela("10:2011-04-01")]
     assert pc.motor_efetivo("planjud", "INPC", "SEM_JUROS", ps, False, False) == "planjud"
+    assert pc.motor_efetivo("local", "INPC", "SEM_JUROS", ps, False, False) == "local"
     assert pc.motor_efetivo("auto", "INPC", "SEM_JUROS", ps, False, False) == "local"
     assert pc.motor_efetivo("auto", "INPC", "JUROS_12", ps, False, False) == "planjud"     # juros != SEM
     assert pc.motor_efetivo("auto", "FAZENDA_PUBLICA", "SEM_JUROS", ps, False, False) == "planjud"
     assert pc.motor_efetivo("auto", "INPC", "SEM_JUROS", ps, True, False) == "planjud"      # EC 136
     with pytest.raises(ValueError):
         pc.motor_efetivo("local", "INPC", "JUROS_12", ps, False, False)
+
+
+def test_motor_local_e_o_padrao():
+    """O motor local é o default do CLI (e do MCP), não o Planjud."""
+    args = pc.build_parser().parse_args(["--parcela", "10:2011-04-01"])
+    assert args.motor == "local"
+    # o default nao pode cair no Planjud silenciosamente: caso fora do escopo -> erro claro
+    with pytest.raises(ValueError) as ei:
+        pc.motor_efetivo(args.motor, "FAZENDA_PUBLICA", "SEM_JUROS",
+                         [pc.parse_parcela("10:2011-04-01")], False, False)
+    assert "--motor planjud" in str(ei.value) and "--motor auto" in str(ei.value)
+
+
+def test_mcp_calcular_correcao_default_local():
+    """O default documentado da tool MCP tambem deve ser 'local' (sem depender de rede)."""
+    import inspect
+    pytest.importorskip("mcp", reason="SDK MCP não instalado (teste opcional)")
+    import planjud_mcp as pm
+    sig = inspect.signature(pm.calcular_correcao)
+    assert sig.parameters["motor"].default == "local"

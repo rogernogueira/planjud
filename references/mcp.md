@@ -14,8 +14,10 @@
 | `atualizar_catalogo` | Re-scrapeia o catálogo do site (nomes, ids **e datas-base**) e salva em cache | ✅ site TJTO | `base_url` |
 | `calcular_correcao` | Corrigir 1+ parcelas (juros opcionais, EC 136, SELIC) | ✅ | `parcelas`, `correcao`, `juros`, `data_base`, `motor`, … |
 
-`calcular_correcao` aceita `motor` = **`planjud`** (oficial, padrão) · **`local`**
-(INPC/IPCA/IGP-DI via BACEN, offline após cache) · **`auto`** (local quando aplicável).
+`calcular_correcao` aceita `motor` = **`local`** (padrão; INPC/IPCA/IGP-DI via BACEN,
+offline após cache) · **`planjud`** (oficial — usa a API do TJTO e cria registro público) ·
+**`auto`** (local quando aplicável, senão Planjud). O motor local exige `juros=SEM_JUROS`,
+sem EC 136/SELIC e termos ≥ 07/1995; fora disso informe `motor="planjud"` ou `"auto"`.
 E `usar_cache` (padrão `true`) reaproveita resultados; a resposta traz `motor` e `de_cache`.
 
 `calcular_correcao` aceita parcelas como dict ou string:
@@ -108,7 +110,7 @@ funções do `planjud_mcp.py`.
   TTL 30 dias, em `~/.cache/planjud-calculo/resultados.json`. Uma segunda chamada idêntica
   devolve `de_cache: true` e **não** gera novo registro no Planjud.
 - **Catálogo** e **séries de índices** também ficam em cache. `atualizar_catalogo` reescreve o catálogo.
-- **Motor local** (`motor=local`) calcula INPC/IPCA/IGP-DI sem o Planjud (BACEN SGS, cache de 1 dia).
+- **Motor local** (`motor=local`, padrão) calcula INPC/IPCA/IGP-DI sem o Planjud (BACEN SGS, cache de 1 dia).
 - Tudo respeita `PLANJUD_CACHE_DIR` (diretório base do cache) — útil no `env:` do `mcp_servers`.
 
 ## Pitfalls

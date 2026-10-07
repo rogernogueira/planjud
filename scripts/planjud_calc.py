@@ -593,15 +593,18 @@ def calcular_local(parcelas, ckey, data_base, usar_cache=True, ttl_indice_dias=1
 
 
 def motor_efetivo(motor, ckey, jkey, parcelas, ec136, selic_cumulada):
-    """Decide o motor: 'planjud' (oficial) ou 'local' (offline). 'auto' escolhe o possível."""
+    """Decide o motor: 'local' (padrão, offline) ou 'planjud' (oficial). 'auto' escolhe o possível."""
     if motor == "planjud":
         return "planjud"
     ok = (ckey in SGS_SERIES and jkey == "SEM_JUROS" and not ec136 and not selic_cumulada
           and all((p["data"].year, p["data"].month) >= LOCAL_TERMO_MINIMO for p in parcelas))
     if motor == "local":
         if not ok:
-            raise ValueError("motor local indisponível: exige critério em %s, juros SEM_JUROS, "
-                             "sem EC 136 e termos a partir de 07/1995" % ", ".join(SGS_SERIES))
+            raise ValueError(
+                "motor local indisponível para este caso: exige critério em %s, juros SEM_JUROS, "
+                "sem EC 136/SELIC e termos a partir de 07/1995. "
+                "Use --motor planjud (oficial) ou --motor auto (local quando possível, senão Planjud)."
+                % ", ".join(SGS_SERIES))
         return "local"
     return "local" if ok else "planjud"   # auto
 
@@ -683,7 +686,8 @@ def ord_brl(x) -> str:
 
 
 # ---------------------------------------------------------------------------
-def main(argv=None) -> int:
+def build_parser() -> argparse.ArgumentParser:
+    """Constrói o parser da CLI (exposto para testes e integração)."""
     ap = argparse.ArgumentParser(
         description="Correção/atualização monetária de valores via Planjud (TJTO) — múltiplas parcelas.",
         formatter_class=argparse.RawDescriptionHelpFormatter, epilog=__doc__)
@@ -706,8 +710,9 @@ def main(argv=None) -> int:
     ap.add_argument("--selic-cumulada", action="store_true", help="cálculo cumulado com SELIC (EC 113/21)")
     ap.add_argument("--base-url", default=DEFAULT_BASE_URL)
     ap.add_argument("--insecure", action="store_true", help="não validar o certificado TLS")
-    ap.add_argument("--motor", default="planjud", choices=["planjud", "local", "auto"],
-                    help="motor de cálculo: planjud (oficial, padrão), local (INPC/IPCA/IGP-DI via BACEN) ou auto")
+    ap.add_argument("--motor", default="local", choices=["local", "planjud", "auto"],
+                    help="motor de cálculo: local (padrão; INPC/IPCA/IGP-DI via BACEN, offline) ou "
+                         "planjud (oficial, cria registro público) ou auto (local quando aplicável, senão Planjud)")
     ap.add_argument("--refresh", action="store_true",
                     help="atualiza o catálogo de critérios a partir do site (datas-base) e sai")
     ap.add_argument("--catalog", default=None, help="caminho de um arquivo de catálogo JSON a usar")
@@ -718,6 +723,11 @@ def main(argv=None) -> int:
     ap.add_argument("--json", action="store_true", help="imprimir o JSON bruto do resultado")
     ap.add_argument("--dry-run", action="store_true", help="apenas montar e mostrar o payload")
     ap.add_argument("--list", action="store_true", help="listar critérios disponíveis e sair")
+    return ap
+
+
+def main(argv=None) -> int:
+    ap = build_parser()
     args = ap.parse_args(argv)
 
     if args.clear_cache:
