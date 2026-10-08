@@ -36,10 +36,10 @@ import sys
 import unicodedata
 from datetime import date, datetime
 
-try:
-    import requests
-except ImportError:  # pragma: no cover
-    sys.exit("É necessário o pacote 'requests'. Instale com: uv pip install requests  (ou pip install requests)")
+# O pacote unificado não importa cliente HTTP. As rotinas legadas de rede abaixo
+# permanecem apenas para reaproveitar o motor matemático original e falham de
+# forma fechada caso sejam chamadas diretamente.
+requests = None
 
 DEFAULT_BASE_URL = "https://app.tjto.jus.br/planjud"
 

@@ -1,29 +1,44 @@
 [build-system]
-requires = ["setuptools>=68"]
-build-backend = "setuptools.build_meta"
+requires = ["hatchling>=1.26"]
+build-backend = "hatchling.build"
 
 [project]
 name = "planjud-calculo"
-version = "1.0.0"
-description = "Correção monetária e juros de mora pelo Planjud / Cálculo Geral (TJTO) — CLI + servidor MCP"
+version = "2.0.0"
+description = "MCP offline para extrair demonstrativos de pagamentos e calcular correção monetária localmente."
 readme = "README.md"
-requires-python = ">=3.9"
+requires-python = ">=3.10"
 license = { text = "MIT" }
 authors = [{ name = "Rogério Nogueira", email = "roger@uft.edu.br" }]
-keywords = ["planjud", "tjto", "calculo", "correcao-monetaria", "inpc", "ipca", "selic", "mcp"]
-dependencies = ["requests>=2.28"]
+keywords = [
+  "mcp",
+  "pdf",
+  "pymupdf",
+  "planjud",
+  "correcao-monetaria",
+  "inpc",
+  "ipca",
+  "excel",
+]
+dependencies = [
+  "PyMuPDF>=1.24,<2",
+  "XlsxWriter>=3.2,<4",
+]
 
 [project.optional-dependencies]
-mcp = ["mcp<2"]
-test = ["pytest"]
+test = ["pytest>=8,<10"]
 
 [project.urls]
 Homepage = "https://github.com/rogernogueira/planjud"
+Repository = "https://github.com/rogernogueira/planjud"
 
 [project.scripts]
-planjud-calc = "planjud_calc:main"
-planjud-mcp = "planjud_mcp:main"
+planjud-mcp = "demonstrativo_mcp.server:main"
+demonstrativo-pagamentos-mcp = "demonstrativo_mcp.server:main"
 
-[tool.setuptools]
-py-modules = ["planjud_calc", "planjud_mcp"]
-package-dir = { "" = "scripts" }
+[tool.hatch.build.targets.wheel]
+packages = ["src/demonstrativo_mcp"]
+
+[tool.pytest.ini_options]
+pythonpath = ["src"]
+testpaths = ["tests"]

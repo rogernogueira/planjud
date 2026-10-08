@@ -13,3 +13,6 @@ build/
 .ruff_cache/
 .DS_Store
 *.xlsx
+*.pdf
+*_demonstrativo/
+outputs/

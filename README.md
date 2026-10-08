@@ -1,200 +1,295 @@
-# Planjud — Cálculo Geral (TJTO) · ferramenta de correção
+# Planjud MCP offline — PDF, cálculos e Excel
 
-> **Ferramenta não oficial** para calcular **correção monetária + juros de mora** pelo
-> sistema **Planjud / Cálculo Geral** do **Tribunal de Justiça do Tocantins (TJTO)**,
-> replicando a requisição que o formulário público do sistema envia.
-> CLI em Python + **servidor MCP** (plugável em qualquer agente de IA).
+Servidor MCP local que reúne, em uma única integração:
 
-- **Sistema-alvo:** `https://app.tjto.jus.br/planjud` — módulo Cálculo Geral (v5.0.19.7)
-- **Índices suportados:** INPC, IPCA, IPCA-E, IGP-M, IGP-DI, INCC, TR, SELIC (EC 113/21),
-  Débitos Gerais, Fazenda Pública, Previdenciário, Débitos Gerais + IPCA (Lei 14.905/2024)…
-- **Regimes especiais:** EC 113/2021 (SELIC), EC 136/2025 (Prov. 207/CNJ), Lei 14.905/2024, Taxa Legal (art. 406, §1º, CC)
-- **Múltiplas parcelas** por linha de comando ou CSV.
-- **Motor local (padrão)** — INPC/IPCA/IGP-DI calculados **offline** via séries do BACEN, sem criar registro público; o motor oficial do Planjud fica a um `--motor planjud`. Inclui **cache** de resultados e **refresh** do catálogo a partir do site.
+1. localização das páginas **DEMONSTRATIVO DE PAGAMENTOS** em um PDF;
+2. extração tabular diretamente da camada textual do documento;
+3. normalização, tipagem, classificação e validação dos lançamentos;
+4. cálculo local de correção monetária por INPC, IPCA ou IGP-DI;
+5. geração de PDF recortado, JSON, CSV e planilha Excel com fórmulas.
 
-> ⚠️ **Aviso:** este projeto **não é** um produto do TJTO nem da CRP Tecnologia. Ele usa a
-> API pública do módulo. Ao usar o **motor Planjud** (`--motor planjud`/`auto`), **cada
-> execução cria um registro de cálculo público** no sistema do tribunal (retorna um código).
-> Os valores são informativos — **não substituem** o cálculo oficial nem a conferência por
-> um(a) contador(a) judicial.
+O fluxo de execução é **offline**: o servidor não consulta o Planjud/TJTO, não
+envia dados do processo a serviços externos e não cria código nem registro
+público de cálculo. As séries mensais necessárias estão incluídas no pacote.
 
----
+> O repositório não inclui PDFs de processos nem arquivos de resultado. `*.pdf`,
+> `*.xlsx`, `outputs/` e pastas de extração são ignorados pelo Git.
 
-## Requisitos
+## Como funciona
 
-- Python 3.9+
-- [`uv`](https://docs.astral.sh/uv/) (recomendado) ou `pip`
-- Acesso de rede a `app.tjto.jus.br` (TLS válido)
+### 1. Extração nativa do PDF
 
-## Instalação
+Não é usado OCR. O extrator abre o arquivo com
+[PyMuPDF](https://pymupdf.readthedocs.io/) (`pymupdf`, também conhecido como
+`fitz`) e usa `page.get_text("words")`. Cada palavra fornece texto e coordenadas
+`x/y`.
+
+As páginas são selecionadas quando contêm o título `DEMONSTRATIVO DE PAGAMENTOS`
+e ao menos um identificador real de lançamento. As linhas são ancoradas por
+expressões como:
+
+- `P.1/180`, `P.2/180`, `P.1/136` para parcelas;
+- códigos numéricos compostos para lançamentos administrativos.
+
+Os campos são reconstruídos pelas faixas horizontais da tabela: parcela,
+descrição, vencimento, atraso, valor pago, data do recebimento, valor da parcela,
+principal, juros, correção, multa, juros de atraso, desconto e parcela acrescida.
+As coordenadas são normalizadas pela largura da página.
+
+### 2. Normalização e validação
+
+- números brasileiros são convertidos para valores computáveis, por exemplo
+  `1.169,63` → `1169.63`;
+- datas `dd/mm/aaaa` são validadas e convertidas para objetos de data;
+- parcelas com prefixo `P.` são diferenciadas de taxa de transferência,
+  renegociação e outros lançamentos administrativos;
+- apenas parcelas recebem `elegivel_restituicao = true`;
+- a soma de `valor_pago` é comparada ao total `RECEBIDO` do documento.
+
+Na amostra usada durante o desenvolvimento, mantida apenas localmente por conter
+dados de processo, foram identificados 66 lançamentos e a soma extraída foi
+**R$ 56.358,12**, exatamente igual ao total `RECEBIDO` do demonstrativo.
+
+### 3. Cálculo monetário offline
+
+O motor local reaproveita a lógica matemática do projeto Planjud e substitui toda
+obtenção de índices por snapshots empacotados das séries SGS do Banco Central:
+
+| Critério | Série SGS | Intervalo incluído |
+|---|---:|---|
+| INPC | 188 | 01/1995 a 08/2026 |
+| IGP-DI | 190 | 01/1995 a 09/2026 |
+| IPCA | 433 | 01/1995 a 08/2026 |
+
+O mês inicial e o mês da data-base participam do produto acumulado:
+
+```text
+fator = produto(1 + índice_mensal / 100)
+valor atualizado = valor original × fator
+```
+
+O escopo local aceita esses três índices, datas a partir de 01/1995 e ausência de
+juros de mora. Critérios compostos do TJTO, SELIC, EC 136/2025 e regras de juros
+não são simulados. Pedidos fora desse escopo retornam erro; não existe fallback
+para a internet.
+
+## Planilha Excel
+
+A exportação cria um arquivo `<nome>_atualizacao_inpc.xlsx` com duas abas.
+
+### Aba `Pagamentos`
+
+Contém as colunas:
+
+| Ordem | Parcela | Descrição | Vencimento | Pagamento | Valor pago (R$) | Principal (R$) | Correção contratual (R$) | Multa (R$) | Juros mora (R$) | Base restituível (R$) | Competência INPC | Índice anterior | Fator INPC | Valor atualizado (R$) | Retenção (R$) | Líquido a restituir (R$) |  |  | Observação |
+|---|---|---|---|---|---:|---:|---:|---:|---:|---:|---|---:|---:|---:|---:|---:|---|---|---|
+
+A célula `B2` guarda a retenção percentual e permanece editável. Os campos
+calculados são fórmulas, não valores fixos:
+
+| Campo | Regra |
+|---|---|
+| Base restituível | `Principal + Correção contratual`, somente para `P.` |
+| Competência INPC | primeiro dia do mês do pagamento |
+| Índice anterior | procura a competência na aba `INPC` |
+| Fator INPC | índice acumulado final ÷ índice anterior |
+| Valor atualizado | base restituível × fator |
+| Retenção | valor atualizado × `$B$2` |
+| Líquido a restituir | valor atualizado − retenção |
+
+Exemplo na interface em português do Excel:
+
+```excel
+=SE(ESQUERDA($B4;2)="P.";PROCV(L4;INPC!$A$6:$D$385;3;FALSO);0)
+```
+
+O arquivo XLSX armazena internamente a mesma fórmula com nomes em inglês e
+separadores por vírgula, como exige o formato Office Open XML. O Excel traduz a
+exibição conforme o idioma instalado.
+
+### Aba `INPC`
+
+Registra a fonte, a observação da Série 188 e a memória mensal:
+
+| Competência | INPC mensal | Índice anterior | Índice acumulado |
+|---|---:|---:|---:|
+
+`Índice anterior` referencia o acumulado da linha anterior, e `Índice acumulado`
+usa `Índice anterior × (1 + INPC mensal)`. As fórmulas da aba `Pagamentos`
+referenciam essa memória diretamente.
+
+## Arquivos gerados
+
+Por padrão, a saída fica em `<pasta-do-pdf>/<nome>_demonstrativo/`:
+
+| Arquivo | Conteúdo |
+|---|---|
+| `<nome>_demonstrativo_pagamentos.pdf` | somente as páginas localizadas |
+| `<nome>_demonstrativo_pagamentos.json` | resultado estruturado e validação |
+| `<nome>_demonstrativo_pagamentos.csv` | lançamentos normalizados, UTF-8 e `;` |
+| `<nome>_atualizacao_inpc.xlsx` | abas `Pagamentos` e `INPC` com fórmulas |
+
+## Requisitos e instalação
+
+- Python 3.10 ou superior;
+- nenhuma credencial;
+- nenhuma conexão de rede durante a execução.
+
+No Windows PowerShell:
+
+```powershell
+git clone https://github.com/rogernogueira/planjud.git
+cd planjud
+py -m venv .venv
+.venv\Scripts\python -m pip install -e .
+```
+
+No Linux ou macOS:
 
 ```bash
-# via uv (sem instalar nada globalmente)
-uv run --with requests scripts/planjud_calc.py --help
-
-# ou instalando o pacote
-pip install .            # CLI
-pip install ".[mcp]"     # CLI + servidor MCP
+git clone https://github.com/rogernogueira/planjud.git
+cd planjud
+python3 -m venv .venv
+.venv/bin/python -m pip install -e .
 ```
 
-## Uso — CLI
+Depois da instalação, o servidor pode ser iniciado por `planjud-mcp` ou
+`demonstrativo-pagamentos-mcp`.
 
-```bash
-# parcela única — R$ 645,36 pago em 01/04/2011 corrigido pelo INPC
-uv run --with requests scripts/planjud_calc.py \
-    --correcao INPC --data-base 2026-08 --parcela 645.36:2011-04-01
+## Configuração do cliente MCP
 
-# VÁRIAS parcelas (VALOR:DATA[:NOME])
-uv run --with requests scripts/planjud_calc.py --correcao INPC --data-base 2026-08 \
-    --parcela 645.36:2011-04-01:Aluguel \
-    --parcela 1000:2015-06-01:Danos \
-    --parcela 250.50:03/2018
+O servidor usa transporte stdio e implementa diretamente o protocolo MCP, sem
+depender do SDK Python do MCP.
 
-# CSV (colunas: valor,data[,nome][,juros_mora])
-uv run --with requests scripts/planjud_calc.py --correcao IPCA --csv examples/parcelas.csv
+Exemplo para Windows, ajustando o caminho do repositório:
 
-# juros de mora (termo inicial por parcela; sem termo => R$ 0,00)
-#   juros não é coberto pelo motor local (padrão) -> use --motor planjud
-uv run --with requests scripts/planjud_calc.py --correcao FAZENDA_PUBLICA \
-    --juros FAZENDA_GERAL --juros-mora 2011-04 --parcela 645.36:2011-04-01 --motor planjud
-
-# auxiliares
-... --list      # lista todos os critérios (nome → GUID)
-... --dry-run   # mostra o payload JSON sem enviar
-... --json      # imprime o JSON bruto do resultado
-```
-
-Formatos de data aceitos: `YYYY-MM-DD`, `YYYY-MM`, `MM/YYYY`, `DD/MM/YYYY`.
-Valor aceita `645.36` ou `645,36`.
-
-### Dois detalhes que mudam o resultado
-
-1. **Data-base** (`--data-base`): o sistema aceita o mês informado, mas o índice só existe
-   até o **último publicado** — passar um mês maior **não altera o fator**. Para "até hoje",
-   informe o **mês atual**.
-2. **Juros de mora exige termo inicial por parcela** (`--juros-mora` ou coluna `juros_mora`).
-   Sem termo, os juros resultam em **R$ 0,00**.
-
-## Motor local, cache e refresh do catálogo
-
-**Motor local (padrão)** calcula a correção **sem depender do Planjud** para
-**INPC, IPCA e IGP-DI** (termos ≥ 07/1995), usando as séries mensais do **BACEN (SGS)** —
-baixadas uma vez e cacheadas localmente. Resultados **idênticos ao Planjud** para os casos
-validados (ver [`references/motor-local.md`](references/motor-local.md)).
-
-```bash
-# padrão: motor local (offline depois do primeiro fetch; erro se o caso não for suportado)
-... --correcao INPC --data-base 2026-08 --parcela 645.36:2011-04-01
-
-# forçar o motor oficial do Planjud (usa a API do TJTO; cria registro público)
-... --correcao FAZENDA_PUBLICA --juros FAZENDA_GERAL --juros-mora 2011-04 \
-    --parcela 645.36:2011-04-01 --motor planjud
-
-# deixar a ferramenta escolher (local quando aplicável, senão Planjud)
-... --correcao IPCA --data-base 2026-08 --parcela 645.36:2011-04-01 --motor auto
-```
-
-O motor local **recusa** (erro explícito, sem cair no Planjud silenciosamente) os casos
-fora do escopo: **juros de mora** (≠ `SEM_JUROS`), **EC 136/2025**, **SELIC (EC 113/2021)**,
-termos **< 07/1995** ou **critério composto**. Para esses (ou para o resultado oficial),
-use `--motor planjud` (oficial) ou `--motor auto`.
-
-**Cache** — resultados por chave determinística (critério + parcelas + data-base + EC 136),
-TTL 30 dias; catálogo e séries também ficam em cache. Limpe com `--clear-cache`.
-
-```bash
-... --no-cache            # ignora o cache nesta execução
-... --cache-ttl 7         # validade do cache de resultados (dias)
-... --clear-cache         # apaga todo o cache
-```
-
-**Refresh do catálogo** — atualiza nomes/ids/**datas-base** dos critérios a partir da
-página `Create` do sistema (as datas-base sobem a cada mês):
-
-```bash
-... --refresh             # mostra e salva as mudanças do catálogo
-```
-
-Tudo respeita `PLANJUD_CACHE_DIR` (diretório base do cache) e `PLANJUD_CATALOG` (arquivo de catálogo).
-
-## Uso — MCP (qualquer agente de IA)
-
-O cálculo é exposto como **ferramentas MCP** (`scripts/planjud_mcp.py`), descobertas
-automaticamente por **Claude Desktop, Cursor, VS Code, Hermes, Zed** … O schema é gerado dos
-*type hints* e *docstrings* — sem *glue code*.
-
-Ferramentas: `listar_criterios`, `indice_disponivel`, `atualizar_catalogo`, `calcular_correcao`.
-
-```bash
-# rodar o servidor (stdio)
-uv run --with "mcp<2" --with requests python scripts/planjud_mcp.py
-```
-
-Registro (mesma forma em todos os clientes):
-
-```yaml
-# Hermes — ~/.hermes/config.yaml
-mcp_servers:
-  planjud:
-    command: "uv"
-    args: ["run", "--with", "mcp<2", "--with", "requests", "python",
-           "/caminho/para/scripts/planjud_mcp.py"]
-```
 ```json
-// Claude Desktop / Cursor / VS Code (.vscode/mcp.json)
-{ "mcpServers": { "planjud": {
-  "command": "uv",
-  "args": ["run","--with","mcp<2","--with","requests","python","/caminho/para/scripts/planjud_mcp.py"] } } }
+{
+  "mcpServers": {
+    "distrato-planjud": {
+      "command": "D:\\caminho\\planjud\\.venv\\Scripts\\python.exe",
+      "args": ["-m", "demonstrativo_mcp.server"]
+    }
+  }
+}
 ```
 
-> ⚠️ **Fixe `mcp<2`.** No SDK 2.x o `FastMCP` virou `MCPServer` (`mcp.server.mcpserver`).
-> O script tolera ambas as versões no import, mas a pinagem evita surpresas.
+Exemplo para Linux ou macOS:
 
-Para frameworks **sem** MCP (OpenAI, Anthropic, LangChain, Ollama, Mistral…), use
-[`references/tool_schema.json`](references/tool_schema.json) — as mesmas 3 funções em formato
-de *function calling*.
-
-## Estrutura
-
-```
-.
-├── scripts/
-│   ├── planjud_calc.py     # CLI (núcleo: catálogo, resolução, HTTP, extração de resultado)
-│   └── planjud_mcp.py      # servidor MCP (stdio) com as 4 ferramentas
-├── references/
-│   ├── criterios.md        # 16 critérios de correção + 12 de juros (com notas normativas)
-│   ├── mcp.md              # integração MCP por cliente, teste e pitfalls
-│   ├── motor-local.md      # motor offline (INPC/IPCA/IGP-DI via BACEN): escopo e validação
-│   └── tool_schema.json    # schema portátil de function calling
-├── docs/
-│   ├── regras-de-negocio.md        # regras de negócio do módulo (extração completa)
-│   └── extracao-e-proveniencia.md  # como as regras foram extraídas (fontes e método)
-├── examples/
-│   └── parcelas.csv
-└── tests/
-    └── test_offline.py     # testes sem rede
+```json
+{
+  "mcpServers": {
+    "distrato-planjud": {
+      "command": "/caminho/planjud/.venv/bin/python",
+      "args": ["-m", "demonstrativo_mcp.server"]
+    }
+  }
+}
 ```
 
-## Verificação (valor de controle)
+## Ferramentas MCP
 
-`645,36` de `04/2011` pelo **INPC**, data-base `08/2026` → **R$ 1.496,16** (fator `2,3183389`).
-Termo inicial `05/2011` → **R$ 1.485,47** (fator `2,3017662`).
+### `localizar_paginas_demonstrativo`
 
-```bash
-pytest -q
+Localiza páginas elegíveis sem exportar arquivos.
+
+```json
+{
+  "pdf_path": "D:\\Processos\\processo.pdf"
+}
 ```
 
-## Proveniência e manutenção
+### `extrair_demonstrativo_pagamentos`
 
-- Extraído em **2026-10-07** contra a **v5.0.19.7** (HTML da view, bundle Vue, manual oficial
-  em PDF e planilhas-modelo do próprio sistema). Detalhes em
-  [`docs/extracao-e-proveniencia.md`](docs/extracao-e-proveniencia.md).
-- O **catálogo de critérios e datas-base** em `scripts/planjud_calc.py` é um **snapshot**.
-  Índices e datas-base sobem a cada mês — confira com `--list` e atualize se necessário.
-- O motor de cálculo **oficial** é *server-side* no Planjud (usado com `--motor planjud|auto`);
-  o **motor local** (padrão) reproduz INPC/IPCA/IGP-DI a partir das séries do BACEN e foi
-  validado contra o Planjud (ver [`references/motor-local.md`](references/motor-local.md)).
+Extrai, valida e opcionalmente gera todos os arquivos.
 
-## Licença
+```json
+{
+  "pdf_path": "D:\\Processos\\processo.pdf",
+  "output_dir": "D:\\Processos\\resultado",
+  "exportar_arquivos": true,
+  "retencao_percentual": 10
+}
+```
 
-MIT — ver [LICENSE](LICENSE).
+`output_dir` é opcional. `retencao_percentual` aceita valores de 0 a 100 e inicia
+em 0 quando omitido.
+
+### `listar_criterios`
+
+Lista o catálogo local. `tipo` pode ser `todos`, `correcao` ou `juros`.
+
+```json
+{"tipo": "correcao"}
+```
+
+### `indice_disponivel`
+
+Informa vigência, última competência incluída e suporte local.
+
+```json
+{"correcao": "INPC"}
+```
+
+### `calcular_correcao`
+
+Calcula uma ou mais parcelas exclusivamente com dados locais.
+
+```json
+{
+  "parcelas": [
+    {"valor": "1.169,63", "data": "10/11/2016", "nome": "Parcela 1"},
+    {"valor": 645.36, "data": "2011-04-01", "nome": "Parcela 2"}
+  ],
+  "correcao": "INPC",
+  "data_base": "2026-08"
+}
+```
+
+A resposta registra explicitamente `modo_rede: "desativado"` e
+`registro_publico: false`.
+
+## Desenvolvimento e testes
+
+```powershell
+py -m venv .venv
+.venv\Scripts\python -m pip install -e ".[test]"
+.venv\Scripts\python -m pytest -q
+```
+
+Os testes criam um PDF sintético em diretório temporário, verificam a descoberta
+das cinco ferramentas MCP, executam um cálculo com o snapshot empacotado e
+inspecionam as abas e fórmulas do XLSX. Nenhum teste acessa a rede.
+
+Estrutura principal:
+
+```text
+src/demonstrativo_mcp/
+├── server.py          # protocolo MCP stdio e schemas das ferramentas
+├── extractor.py       # extração posicional, tipagem e validação
+├── excel_export.py    # planilha Pagamentos + INPC
+├── planjud_tools.py   # interface segura do motor local
+├── _planjud_calc.py   # lógica matemática reaproveitada do Planjud
+└── data/              # snapshots SGS 188, 190 e 433
+```
+
+## Limitações conhecidas
+
+- PDFs apenas digitalizados precisam de uma etapa externa de OCR e não são
+  processados por este projeto.
+- A reconstrução posicional foi calibrada para o layout do demonstrativo UAU;
+  mudanças substanciais no modelo podem exigir ajuste das faixas horizontais.
+- Os índices não são atualizados automaticamente, preservando a operação offline.
+  Para novas competências, os snapshots devem ser revisados e versionados no
+  repositório antes da instalação.
+- A validação confirma a consistência entre a tabela extraída e o total do próprio
+  documento; ela não substitui revisão contábil ou jurídica.
+
+## Licença e fontes
+
+Código sob licença MIT. A lógica reaproveitada do Planjud mantém a licença em
+`src/demonstrativo_mcp/PLANJUD_LICENSE`.
+
+As séries são identificadas como BACEN/SGS 188 (INPC/IBGE), 190 (IGP-DI/FGV) e
+433 (IPCA/IBGE). Os endereços de origem ficam registrados como metadados para
+rastreabilidade, mas o servidor não os consulta durante a execução.

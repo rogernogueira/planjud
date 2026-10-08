@@ -1,5 +1,2 @@
-requests>=2.28
-
-# Servidor MCP (opcional) — a CLI não precisa deste pacote.
-# Fixe mcp<2: no SDK 2.x FastMCP virou MCPServer.
-# mcp<2
+PyMuPDF>=1.24,<2
+XlsxWriter>=3.2,<4
