@@ -14,5 +14,6 @@ build/
 .DS_Store
 *.xlsx
 *.pdf
+!examples/processo1_anonimizado.pdf
 *_demonstrativo/
 outputs/

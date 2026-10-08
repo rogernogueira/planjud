@@ -55,6 +55,33 @@ def test_mcp_expoe_apenas_ferramentas_offline() -> None:
     assert _planjud_calc.requests is None
 
 
+def test_mcp_processa_exemplo_anonimizado_do_repositorio() -> None:
+    example = Path(__file__).parents[1] / "examples" / "processo1_anonimizado.pdf"
+    assert example.is_file()
+
+    called = handle_request(
+        {
+            "jsonrpc": "2.0",
+            "id": 4,
+            "method": "tools/call",
+            "params": {
+                "name": "extrair_demonstrativo_pagamentos",
+                "arguments": {
+                    "pdf_path": str(example),
+                    "exportar_arquivos": False,
+                },
+            },
+        }
+    )
+
+    result = called["result"]["structuredContent"]
+    assert result["paginas_pdf"] == [33, 34]
+    assert result["quantidade_lancamentos"] == 66
+    assert result["total_extraido"] == 56358.12
+    assert result["total_recebido_documento"] == 56358.12
+    assert result["validacao_ok"] is True
+
+
 def test_calculo_local_com_snapshot_empacotado() -> None:
     called = handle_request(
         {

@@ -12,8 +12,10 @@ O fluxo de execução é **offline**: o servidor não consulta o Planjud/TJTO, n
 envia dados do processo a serviços externos e não cria código nem registro
 público de cálculo. As séries mensais necessárias estão incluídas no pacote.
 
-> O repositório não inclui PDFs de processos nem arquivos de resultado. `*.pdf`,
-> `*.xlsx`, `outputs/` e pastas de extração são ignorados pelo Git.
+> O único PDF de processo versionado é
+> `examples/processo1_anonimizado.pdf`, preparado exclusivamente com dados
+> fictícios para demonstrar e testar o MCP. Outros `*.pdf`, arquivos `*.xlsx`,
+> `outputs/` e pastas de extração continuam ignorados pelo Git.
 
 ## Como funciona
 
@@ -214,6 +216,30 @@ Extrai, valida e opcionalmente gera todos os arquivos.
 
 `output_dir` é opcional. `retencao_percentual` aceita valores de 0 a 100 e inicia
 em 0 quando omitido.
+
+## Exemplo anonimizado incluído
+
+O arquivo `examples/processo1_anonimizado.pdf` pode ser usado imediatamente após
+clonar o repositório. Ele preserva a estrutura de um processo de teste, mas os
+nomes, documentos, contatos, endereços, assinaturas e demais identificadores
+pessoais foram removidos ou substituídos por dados fictícios. O arquivo original
+não é versionado.
+
+Execute a ferramenta `extrair_demonstrativo_pagamentos` a partir da raiz do
+repositório com:
+
+```json
+{
+  "pdf_path": "examples/processo1_anonimizado.pdf",
+  "output_dir": "outputs/exemplo_anonimizado",
+  "exportar_arquivos": true,
+  "retencao_percentual": 10
+}
+```
+
+O resultado esperado localiza o demonstrativo nas páginas 33 e 34, extrai 66
+lançamentos e valida o total recebido de **R$ 56.358,12**, sem acessar a rede ou
+criar registro público.
 
 ### `listar_criterios`
 
